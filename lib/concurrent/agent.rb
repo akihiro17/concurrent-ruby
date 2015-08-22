@@ -10,11 +10,22 @@ module Concurrent
   # `Agent`s are inspired by [Clojure's](http://clojure.org/) [agent](http://clojure.org/agents) function. An `Agent` is a single atomic value that represents an identity. The current value of the `Agent` can be requested at any time (`deref`). Each `Agent` has a work queue and operates on the global thread pool (see below). Consumers can `post` code blocks to the `Agent`. The code block (function) will receive the current value of the `Agent` as its sole parameter. The return value of the block will become the new value of the `Agent`. `Agent`s support two error handling modes: fail and continue. A good example of an `Agent` is a shared incrementing counter, such as the score in a video game. 
   class Agent < Synchronization::Object
     include Concern::Dereferenceable
-    include Concern::Observable
+    #include Concern::Observable
 
     ERROR_MODES = [:continue, :fail].freeze
 
-    Job = Struct.new(:action, :args, :executor)
+    AWAIT_ACTION = ->(value, latch){ latch.count_down }
+    private_constant :AWAIT_ACTION
+
+    class Job
+      attr_reader :action, :args, :executor, :caller
+      def initialize(action, args, executor)
+        @action = action
+        @args = args
+        @executor = executor
+        @caller = Thread.current.object_id
+      end
+    end
     private_constant :Job
 
     class Error < StandardError
@@ -67,6 +78,14 @@ module Concurrent
       send_off(&action)
     end
 
+    def await(timeout = nil)
+      latch = Concurrent::CountDownLatch.new(1)
+      enqueue_job(AWAIT_ACTION, [latch],
+                  Concurrent.global_immdediate_executor,
+                  true)
+      latch.wait(timeout)
+    end
+
     def stopped?
       !@error.value.nil?
     end
@@ -108,12 +127,13 @@ module Concurrent
       ns_set_deref_options(opts)
     end
 
-    def enqueue_job(action, args, executor)
+    def enqueue_job(action, args, executor, await_job = false)
       raise ArgumentError.new('no action given') unless action
       job = Job.new(action, args, executor)
       synchronize do
         break false if stopped?
-        @queue.push(job)
+        index = await_job ? ns_find_last_job_for_thread + 1 : @queue.length
+        @queue.insert(index, job)
         # if this is the only job, post to executor
         ns_post_next_job if @queue.length == 1
         true
@@ -151,6 +171,10 @@ module Concurrent
       @error_handler.call(self, error)
     rescue
       #do nothing
+    end
+
+    def ns_find_last_job_for_thread
+      @queue.rindex {|job| job.caller == Thread.current.object_id }
     end
   end
 end
