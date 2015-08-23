@@ -7,7 +7,7 @@ module Concurrent
 
     it 'posts a job' do
       subject = Agent.new(0)
-      subject.send_via(Concurrent::ImmediateExecutor.new) {|value| 10 }
+      subject.send_via(Concurrent::ImmediateExecutor.new) {|_, _| 10 }
       expect(subject.value).to eq 10
     end
   end

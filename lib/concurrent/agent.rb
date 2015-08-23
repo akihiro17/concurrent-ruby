@@ -14,7 +14,7 @@ module Concurrent
 
     ERROR_MODES = [:continue, :fail].freeze
 
-    AWAIT_ACTION = ->(value, latch){ latch.count_down }
+    AWAIT_ACTION = ->(agent, value, latch){ latch.count_down }
     private_constant :AWAIT_ACTION
 
     class Job
@@ -50,7 +50,7 @@ module Concurrent
     end
 
     def send(*args, &action)
-      enqueue_job(action, args, Concurrent.global_fast_executor)
+      enqueue_action_job(action, args, Concurrent.global_fast_executor)
     end
 
     def send!(*args, &action)
@@ -58,7 +58,7 @@ module Concurrent
     end
 
     def send_off(*args, &action)
-      enqueue_job(action, args, Concurrent.global_io_executor)
+      enqueue_action_job(action, args, Concurrent.global_io_executor)
     end
     alias_method :post, :send_off
 
@@ -67,7 +67,7 @@ module Concurrent
     end
 
     def send_via(executor, *args, &action)
-      enqueue_job(action, args, executor)
+      enqueue_action_job(action, args, executor)
     end
 
     def send_via!(executor, *args, &action)
@@ -78,11 +78,22 @@ module Concurrent
       send_off(&action)
     end
 
-    def await(timeout = nil)
+    def await
+      wait(nil)
+    end
+
+    def await_for(timeout)
+      wait(timeout.to_f)
+    end
+
+    def await_for!(timeout)
+      raise Concurrent::TimeoutError unless wait(timeout.to_f)
+      true
+    end
+
+    def wait(timeout = nil)
       latch = Concurrent::CountDownLatch.new(1)
-      enqueue_job(AWAIT_ACTION, [latch],
-                  Concurrent.global_immdediate_executor,
-                  true)
+      enqueue_await_job(latch)
       latch.wait(timeout)
     end
 
@@ -103,6 +114,26 @@ module Concurrent
         end
       end
       true
+    end
+
+    class << self
+
+      def await(*agents)
+        agents.each {|agent| agent.await }
+      end
+
+      def await_for(timeout, *agents)
+        end_at = Concurrent.monotonic_time + timeout.to_f
+        agents.each do |agent|
+          break false unless agent.await_for(end_at - Concurrent.monotonic_time)
+          true
+        end
+      end
+
+      def await_for!(timeout, *agents)
+        raise Concurrent::TimeoutError unless await_for(timeout_agents)
+        true
+      end
     end
 
     private
@@ -127,17 +158,32 @@ module Concurrent
       ns_set_deref_options(opts)
     end
 
-    def enqueue_job(action, args, executor, await_job = false)
+    def enqueue_action_job(action, args, executor)
       raise ArgumentError.new('no action given') unless action
       job = Job.new(action, args, executor)
+      synchronize { ns_enqueue_job(job) }
+    end
+
+    def enqueue_await_job(latch)
       synchronize do
-        break false if stopped?
-        index = await_job ? ns_find_last_job_for_thread + 1 : @queue.length
-        @queue.insert(index, job)
-        # if this is the only job, post to executor
-        ns_post_next_job if @queue.length == 1
-        true
+        if (index = ns_find_last_job_for_thread)
+          job = Job.new(AWAIT_ACTION, [latch],
+                        Concurrent.global_immdediate_executor)
+          ns_enqueue_job(job, index)
+        else
+          latch.count_down
+          true
+        end
       end
+    end
+
+    def ns_enqueue_job(job, index = nil)
+      return false if stopped?
+      index ||= @queue.length
+      @queue.insert(index, job)
+      # if this is the only job, post to executor
+      ns_post_next_job if @queue.length == 1
+      true
     end
 
     def ns_post_next_job
@@ -146,7 +192,7 @@ module Concurrent
 
     def execute_next_job
       job = synchronize { @queue.first }
-      new_value = job.action.call(@current.value, *job.args)
+      new_value = job.action.call(self, @current.value, *job.args)
       @current.value = new_value if ns_validate(new_value)
     rescue => error
       handle_error(error)
