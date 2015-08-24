@@ -24,7 +24,6 @@ module Concurrent
   #
   #   The API and behavior of this class are based on Java's `SingleThreadExecutor`
   #
-  # @!macro thread_pool_options
   # @!macro abstract_executor_service_public_api
   class SingleThreadExecutor < SingleThreadExecutorImplementation
 
@@ -32,9 +31,12 @@ module Concurrent
     #
     #   Create a new thread pool.
     #
-    #   @option opts [Symbol] :fallback_policy (:discard) the policy for
-    #     handling new tasks that are received when the queue size has
-    #     reached `max_queue` or after the executor has shut down
+    #   @option opts [Symbol] :fallback_policy (:discard) the policy for handling new
+    #     tasks that are received when the queue size has reached
+    #     `max_queue` or the executor has shut down
+    #
+    #   @raise [ArgumentError] if `:fallback_policy` is not one of the values specified
+    #     in `FALLBACK_POLICIES`
     #
     #   @see http://docs.oracle.com/javase/tutorial/essential/concurrency/pools.html
     #   @see http://docs.oracle.com/javase/7/docs/api/java/util/concurrent/Executors.html
